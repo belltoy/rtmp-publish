@@ -18,7 +18,7 @@ async-stream = "0.2"
 trackable = "0.2"
 rml_amf0 = "0.1.1"
 rml_rtmp = { git = "https://github.com/belltoy/rust-rtmp" }
-flv_codec = { git = "https://github.com/twitchalerts/flv_codec" }
+flv_codec = { git = "https://github.com/belltoy/flv_codec" }
 pin-utils = "0.1"
 num_cpus = "1"
 url = "2"

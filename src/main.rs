@@ -30,8 +30,8 @@ mod flv;
 mod logger;
 
 const USAGE: &str = "
-    rtmp-publish --input <INPUT> <DEST_LIST_FILE>
-    rtmp-publish --input <INPUT> --concurrency <CONCURRENCY> --prefix <PREFIX>";
+    rtmp-publish [FLAGS] [OPTIONS] --input <INPUT> <DEST_LIST_FILE>
+    rtmp-publish [FLAGS] [OPTIONS] --input <INPUT> --concurrency <CONCURRENCY> --prefix <PREFIX>";
 
 const EXAMPLE: &str = "
 EXAMPLES:
@@ -80,6 +80,10 @@ async fn main() -> Result<(), std::io::Error> {
             .required(true)
             .takes_value(true))
 
+        .arg(Arg::with_name("repeat")
+            .short("r")
+            .long("repeat"))
+
         .arg(Arg::with_name("CONCURRENCY")
             .short("c")
             .long("concurrency")
@@ -119,6 +123,7 @@ async fn main() -> Result<(), std::io::Error> {
         Box::new(urls)
     };
     let urls = urls.map(|u| parse_rtmp_url(u.as_str())).collect::<Vec<Result<Url, _>>>();
+    let repeat = matches.is_present("repeat");
 
     if let Some(Err(e)) = urls.iter().find(|u| u.is_err()) {
         panic!("RTMP url error: {}", e);
@@ -129,7 +134,7 @@ async fn main() -> Result<(), std::io::Error> {
     let input_file_path = matches.value_of("INPUT").unwrap();
     assert!(input_file_path.ends_with(".flv") || input_file_path.ends_with(".FLV"),
         "Only FLV files are supported");
-    let msgs = flv::read_flv_tag(input_file_path).await?;
+    let msgs = flv::read_flv_tag(input_file_path, repeat, root_logger.clone()).await?;
 
     let (tx, _rx) = tokio::sync::broadcast::channel(1024);
 
