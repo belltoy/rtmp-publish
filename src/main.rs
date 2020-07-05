@@ -22,10 +22,12 @@ use rml_rtmp::{
     sessions::StreamMetadata,
     time::RtmpTimestamp,
 };
+use slog::{info};
 
 mod error;
 mod rtmp;
 mod flv;
+mod logger;
 
 const USAGE: &str = "
     rtmp-publish --input <INPUT> <DEST_LIST_FILE>
@@ -63,6 +65,7 @@ EXAMPLES:
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
+    let (root_logger, _guard) = logger::init();
     #[allow(deprecated)]
     let matches = App::new("RTMP Publish Bench Tool")
         .version(crate_version!())
@@ -135,10 +138,10 @@ async fn main() -> Result<(), std::io::Error> {
     builder.threaded_scheduler().enable_all();
 
     if let Some(threads) = num_threads {
-        println!("Use {} cores as threads number", threads);
+        info!(root_logger, "Use {} cores as threads number", threads);
         builder.core_threads(threads);
     } else {
-        println!("Use the number of cores available to the system as threads number");
+        info!(root_logger, "Use the number of cores available to the system as threads number");
     }
 
     let (tx, _rx) = tokio::sync::broadcast::channel(16);
@@ -146,7 +149,7 @@ async fn main() -> Result<(), std::io::Error> {
     let clients = futures::stream::futures_unordered::FuturesUnordered::new();
     for Url{ host, port, app, stream } in urls {
         let rx = tx.subscribe();
-        let client_fut = rtmp::client::Client::new(host, port, app, stream, rx);
+        let client_fut = rtmp::client::Client::new(host, port, app, stream, rx, root_logger.clone());
         clients.push(client_fut);
     }
 
@@ -154,11 +157,18 @@ async fn main() -> Result<(), std::io::Error> {
     pin_mut!(msgs);
     let mut msgs: Pin<&mut _> = msgs;
 
+    // await for all publish client ready
     let _ = clients.collect::<Vec<_>>().await;
+
+    // broadcast
     while let Some(Ok(msg)) = msgs.next().await {
+        if tx.receiver_count() <= 0 {
+            break;
+        }
         let _ = tx.send(msg);
     }
 
+    info!(root_logger, "End");
     Ok(())
 }
 

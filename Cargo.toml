@@ -22,3 +22,6 @@ flv_codec = { git = "https://github.com/twitchalerts/flv_codec" }
 pin-utils = "0.1"
 num_cpus = "1"
 url = "2"
+slog = "2"
+slog-async = "2"
+slog-term = "2"

@@ -26,6 +26,10 @@ use rml_rtmp::{
         ClientSessionResult, PublishRequestType,
     },
 };
+use slog::{
+    debug, info, warn, error,
+    Logger,
+};
 
 use crate::{
     error::{
@@ -44,20 +48,21 @@ struct Session {
     stream: String,
     inner: ClientSession,
     notify_tx: Option<oneshot::Sender<()>>,
+    logger: Logger,
 }
 
 impl Client {
-    pub async fn new(addr: String, port: u16, app: String, stream: String, broadcast_rx: broadcast::Receiver<Arc<PacketType>>) -> Self {
+    pub async fn new(addr: String, port: u16, app: String, stream: String, broadcast_rx: broadcast::Receiver<Arc<PacketType>>, logger: Logger) -> Self {
         let (notify_tx, notify_rx) = oneshot::channel();
         tokio::spawn(async move {
             match Self::connect(format!("{}:{}", addr, port)).await {
                 Ok(transport) => {
                     let tc_url = format!("rtmp://{}:{}/{}", addr, port, app);
-                    println!("[INFO] starting to push {}/{}", tc_url, stream);
-                    Self::start_push(transport, broadcast_rx, notify_tx, app, stream, tc_url).await;
+                    info!(logger, "starting to push {}/{}", tc_url, stream);
+                    Self::start_push(transport, broadcast_rx, notify_tx, app, stream, tc_url, logger.clone()).await;
                 }
                 Err(e) => {
-                    println!("[ERROR] connect to server error: {}", e);
+                    error!(logger, "connect to server error: {}", e);
                 }
             }
         });
@@ -75,7 +80,8 @@ impl Client {
     async fn start_push<T, S1, S2>(transport: Framed<T, super::codec::Codec>,
                                    broadcast_rx: broadcast::Receiver<Arc<PacketType>>,
                                    notify_tx: oneshot::Sender<()>,
-                                   app: S1, stream: S2, tc_url: String)
+                                   app: S1, stream: S2, tc_url: String,
+                                   logger: Logger)
         where S1: Into<String>,
               S2: Into<String>,
               T: AsyncRead + AsyncWrite + Send + 'static,
@@ -84,9 +90,10 @@ impl Client {
         let (tx, rx) = futures::channel::mpsc::channel(16); // response to socket channel
 
         // write back to connection asynchronously
-        tokio::spawn(async {
+        let logger_inner = logger.clone();
+        tokio::spawn(async move {
             let _ = rx.map(|r| Ok(r)).forward(to_server).await;
-            println!("[DEBUG] publisher write end finished");
+            info!(logger_inner, "publisher write end finished");
         });
 
         let broadcast_rx = broadcast_rx.into_stream().map_ok(|m| ReceivedType::Broadcast(m))
@@ -101,13 +108,13 @@ impl Client {
 
         let rx = stream::select(from_server, broadcast_rx);
 
-        start_reading(tx, rx, notify_tx, app.into(), stream.into(), tc_url).await;
+        start_reading(tx, rx, notify_tx, app.into(), stream.into(), tc_url, logger).await;
     }
 }
 
 impl Session {
-    fn new(app: String, stream: String, inner: ClientSession, notify_tx: oneshot::Sender<()>) -> Self {
-        Self { app, stream, inner, notify_tx: Some(notify_tx) }
+    fn new(app: String, stream: String, inner: ClientSession, notify_tx: oneshot::Sender<()>, logger: Logger) -> Self {
+        Self { app, stream, inner, notify_tx: Some(notify_tx), logger }
     }
 
     fn request_connect(&mut self, tc_url: String) -> Result<Packet, Error> {
@@ -137,7 +144,7 @@ impl Session {
         };
 
         if let Some(msg) = unknown {
-            println!("[DEBUG] received unknown message: {:?}", msg);
+            debug!(self.logger, "received unknown message: {:?}", msg);
         }
 
         // handle raised event
@@ -173,7 +180,7 @@ impl Session {
                         self.handle_push_publish_accepted_event();
                     }
                     x => {
-                        println!("[WARN] Unknown event raised by peer server: {:?}", x);
+                        warn!(self.logger, "Unknown event raised by peer server: {:?}", x);
                     }
                 }
             }
@@ -188,7 +195,7 @@ impl Session {
     }
 
     fn handle_push_publish_accepted_event(&mut self) {
-        println!("[INFO] Publish accepted for push stream {}", self.stream);
+        info!(self.logger, "Publish accepted for push stream {}", self.stream);
         if let Some(notify_tx) = self.notify_tx.take() {
             let _ = notify_tx.send(());
         }
@@ -200,7 +207,8 @@ async fn start_reading<T>(tx: futures::channel::mpsc::Sender<Packet>,
                           notify_tx: oneshot::Sender<()>,
                           app: String,
                           stream: String,
-                          tc_url: String)
+                          tc_url: String,
+                          logger: Logger)
     where
         T: Stream<Item = Result<ReceivedType, Error>> + Send + 'static,
 {
@@ -218,7 +226,7 @@ async fn start_reading<T>(tx: futures::channel::mpsc::Sender<Packet>,
         }
     }).collect::<Vec<_>>();
 
-    let mut session = Session::new(app, stream, session, notify_tx);
+    let mut session = Session::new(app, stream, session, notify_tx, logger.clone());
 
     let packet = session.request_connect(tc_url).unwrap();
     requests.push(Ok(packet));
