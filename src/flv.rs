@@ -46,7 +46,7 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
                         }
 
                         if ts_delta > 300 {
-                            tokio::time::delay_for(Duration::from_millis(50)).await;
+                            sleep(ts_delta).await;
                             last_ts = timestamp_value;
                         }
                         let packet = PacketType::Video{ data: Bytes::from(data), ts: timestamp };
@@ -95,8 +95,8 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
                         }
 
                         if ts_delta > 300 {
-                            tokio::time::delay_for(Duration::from_millis(50)).await;
-                            let last_ts = timestamp_value;
+                            sleep(ts_delta).await;
+                            last_ts = timestamp_value;
                         }
                         let packet = PacketType::Audio{ data, ts: timestamp};
                         yield Arc::new(packet);
@@ -119,7 +119,7 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
                                     let mut metadata = rml_rtmp::sessions::StreamMetadata::new();
                                     metadata.apply_metadata_values(metadata_object);
                                     if ts_delta > 300 {
-                                        tokio::time::delay_for(Duration::from_millis(50)).await;
+                                        sleep(ts_delta).await;
                                         last_ts = timestamp_value;
                                     }
                                     let packet = PacketType::Metadata(Arc::new(metadata));
@@ -137,6 +137,13 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
     }).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "open input file error")
     }).await?
+}
+
+async fn sleep(ms_time: u32) {
+    let delta = ms_time.checked_sub(100).unwrap_or(0);
+    if delta > 0 {
+        tokio::time::delay_for(Duration::from_millis(delta as u64)).await;
+    }
 }
 
 pub fn is_video_sequence_header(data: &[u8]) -> bool {
