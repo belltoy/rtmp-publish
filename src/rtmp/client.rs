@@ -46,6 +46,7 @@ use crate::{
     ReceivedType,
 };
 
+#[derive(Debug)]
 pub struct Client {
 }
 
@@ -53,7 +54,7 @@ struct Session {
     app: String,
     stream: String,
     inner: ClientSession,
-    notify_tx: Option<oneshot::Sender<()>>,
+    ready: bool,
     logger: Logger,
 }
 
@@ -61,20 +62,33 @@ impl Client {
     pub async fn new(addr: String, port: u16, app: String, stream: String, broadcast_rx: broadcast::Receiver<Arc<PacketType>>, logger: &Logger) -> Self {
         let logger = logger.new(o!("app" => app.clone(), "stream" => stream.clone()));
         let (notify_tx, notify_rx) = oneshot::channel();
+        let (buffer_tx, buffer_rx) = futures::channel::mpsc::channel(8);
+
+        tokio::spawn(async move {
+            broadcast_rx.into_stream()
+                .map(|r| async { r })
+                .buffered(8)
+                .map_err(|_e| format!("Receive broadcast error") )
+                .forward(buffer_tx.sink_map_err(|_e| format!("Buffer sender error"))).await
+        });
+
+        let logger_inner = logger.clone();
         tokio::spawn(async move {
             match Self::connect(format!("{}:{}", addr, port)).await {
                 Ok(transport) => {
                     let tc_url = format!("rtmp://{}:{}/{}", addr, port, app);
-                    info!(logger, "starting to push {}/{}", tc_url, stream);
-                    Self::start_push(transport, broadcast_rx, notify_tx, app, stream, tc_url, logger.clone()).await;
+                    info!(logger_inner, "starting to push {}/{}", tc_url, stream);
+                    Self::start_push(transport, buffer_rx, notify_tx, app, stream, tc_url, logger_inner.clone()).await;
                 }
                 Err(e) => {
-                    error!(logger, "connect to server error: {}", e);
+                    error!(logger_inner, "connect to server error: {}", e);
                 }
             }
         });
 
-        let _ = notify_rx.await;
+        if let Err(e) = notify_rx.await {
+            error!(logger, "notify_rx error"; "error" => %e);
+        }
         Self {}
     }
 
@@ -85,7 +99,7 @@ impl Client {
     }
 
     async fn start_push<T, S1, S2>(transport: Framed<T, super::codec::Codec>,
-                                   broadcast_rx: broadcast::Receiver<Arc<PacketType>>,
+                                   buffer_rx: futures::channel::mpsc::Receiver<Arc<PacketType>>,
                                    notify_tx: oneshot::Sender<()>,
                                    app: S1, stream: S2, tc_url: String,
                                    logger: Logger)
@@ -99,13 +113,18 @@ impl Client {
         // write back to connection asynchronously
         let logger_inner = logger.clone();
         tokio::spawn(async move {
-            let _ = rx.map(|r| Ok(r)).forward(to_server).await;
-            info!(logger_inner, "Publisher write end finished");
+            let rs = rx.map(|r| Ok(r)).forward(to_server).await;
+            match rs {
+                Ok(_) => warn!(logger_inner, "Publisher write end finished"),
+                Err(e) => error!(logger_inner, "Publisher write error"; "error" => %e),
+            };
         });
 
-        let broadcast_rx = broadcast_rx.into_stream().map_ok(|m| ReceivedType::Broadcast(m))
-            .map_err(|_| {
-                ErrorKind::Unknown("receive source broadcast error".into()).into()
+        let broadcast_rx = buffer_rx
+            .map(|m| Ok::<_, Error>(ReceivedType::Broadcast(m)))
+            .map_err(|e| {
+                let err_msg = format!("Receive source broadcast error: {}", e);
+                ErrorKind::Unknown(err_msg).into()
             })
             .chain(stream::once(async { Err(ErrorKind::Unknown("session lost".into()).into()) }));
 
@@ -113,15 +132,15 @@ impl Client {
             .map_ok(|(message, bytes_read)| ReceivedType::FromClient{ message, bytes_read })
             .chain(stream::once(async { Err(ErrorKind::Unknown("connection lost".into()).into()) }));
 
-        let rx = stream::select(from_server, broadcast_rx);
+        let reading_rx = stream::select(from_server, broadcast_rx);
 
-        start_reading(tx, rx, notify_tx, app.into(), stream.into(), tc_url, logger).await;
+        start_reading(tx, reading_rx, notify_tx, app.into(), stream.into(), tc_url, logger).await;
     }
 }
 
 impl Session {
-    fn new(app: String, stream: String, inner: ClientSession, notify_tx: oneshot::Sender<()>, logger: &Logger) -> Self {
-        Self { app, stream, inner, notify_tx: Some(notify_tx), logger: logger.clone() }
+    fn new(app: String, stream: String, inner: ClientSession, logger: &Logger) -> Self {
+        Self { app, stream, inner, ready: false, logger: logger.clone() }
     }
 
     fn request_connect(&mut self, tc_url: String) -> Result<Packet, Error> {
@@ -236,9 +255,8 @@ impl Session {
     }
 
     fn handle_push_publish_accepted_event(&mut self) {
-        info!(self.logger, "Publish accepted for push stream {}", self.stream);
-        if let Some(notify_tx) = self.notify_tx.take() {
-            let _ = notify_tx.send(());
+        if !self.ready {
+            self.ready = true;
         }
     }
 }
@@ -267,12 +285,14 @@ async fn start_reading<T>(tx: futures::channel::mpsc::Sender<Packet>,
         }
     }).collect::<Vec<_>>();
 
-    let mut session = Session::new(app, stream, session, notify_tx, &logger);
+    let mut session = Session::new(app, stream, session, &logger);
 
     let packet = session.request_connect(tc_url).unwrap();
     requests.push(Ok(packet));
-    let _ = tx.send_all(&mut stream::iter(requests)).await;
-    let _ = rx.try_fold((tx, session), |(mut tx, mut session), received| async move {
+    if let Err(e) = tx.send_all(&mut stream::iter(requests)).await {
+        error!(logger, "Send request to server error"; "error" => %e);
+    }
+    let result = rx.try_fold((tx, session, Some(notify_tx), logger.clone()), |(mut tx, mut session, notify_tx, logger), received| async move {
         let to_send = match received {
             ReceivedType::FromClient{ message, bytes_read } => {
                 session.handle_from_peer_server(message, bytes_read)
@@ -283,7 +303,32 @@ async fn start_reading<T>(tx: futures::channel::mpsc::Sender<Packet>,
             }
         };
 
-        let _ = tx.send_all(&mut stream::iter(to_send)).await;
-        Ok((tx, session))
+        if let Err(e) = tx.send_all(&mut stream::iter(to_send)).await {
+            error!(logger, "Send to server response error"; "error" => %e);
+        }
+        let notify_tx = match (notify_tx, session.ready) {
+            (Some(notify_tx), true) => {
+                info!(logger, "Publish accepted for push stream");
+                if let Err(_) = notify_tx.send(()) {
+                    error!(logger, "Notify error");
+                }
+                None
+            }
+            (Some(notify_tx), false) => {
+                Some(notify_tx)
+            }
+            (None, _) => {
+                None
+            }
+        };
+        Ok((tx, session, notify_tx, logger))
     }).await;
+    match result {
+        Ok((_tx, _session, _, _logger)) => {
+            info!(logger, "Reading broadcast done");
+        }
+        Err(e) => {
+            error!(logger, "Reading broadcast error"; "error" => %e);
+        }
+    }
 }

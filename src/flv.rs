@@ -139,8 +139,7 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
     }).await?
 }
 
-async fn sleep(ms_time: u32) {
-    let delta = ms_time.checked_sub(100).unwrap_or(0);
+async fn sleep(delta: u32) {
     if delta > 0 {
         tokio::time::delay_for(Duration::from_millis(delta as u64)).await;
     }

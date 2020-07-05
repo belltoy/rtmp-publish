@@ -22,7 +22,7 @@ use rml_rtmp::{
     sessions::StreamMetadata,
     time::RtmpTimestamp,
 };
-use slog::{info};
+use slog::{info, warn};
 
 mod error;
 mod rtmp;
@@ -131,7 +131,7 @@ async fn main() -> Result<(), std::io::Error> {
         "Only FLV files are supported");
     let msgs = flv::read_flv_tag(input_file_path).await?;
 
-    let (tx, _rx) = tokio::sync::broadcast::channel(2 * urls.len());
+    let (tx, _rx) = tokio::sync::broadcast::channel(1024);
 
     let clients = futures::stream::futures_unordered::FuturesUnordered::new();
     for Url{ host, port, app, stream } in urls {
@@ -145,14 +145,21 @@ async fn main() -> Result<(), std::io::Error> {
 
     // await for all publish client ready
     let _ = clients.collect::<Vec<_>>().await;
-    info!(root_logger, "All publish client are ready");
+    info!(root_logger, "All publish clients are ready");
 
     // broadcast
     while let Some(Ok(msg)) = msgs.next().await {
         if tx.receiver_count() <= 0 {
+            warn!(root_logger, "No publish client exists, quit");
             break;
         }
-        let _ = tx.send(msg);
+        match tx.send(msg) {
+            Ok(_num) => { }
+            Err(_) => {
+                warn!(root_logger, "No publish client exists, quit");
+                break;
+            }
+        }
     }
 
     info!(root_logger, "End");
