@@ -1,0 +1,24 @@
+[package]
+name = "rtmp-publish"
+version = "0.1.0"
+authors = ["belltoy <belltoy@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = "0.5"
+bytecodec = "0.4"
+clap = "~2.33"
+failure = "0.1"
+futures = "0.3"
+tokio = { version = "0.2", features = ["full"] }
+tokio-util = { version = "0.3", features = ["codec"] }
+async-stream = "0.2"
+trackable = "0.2"
+rml_amf0 = "0.1.1"
+rml_rtmp = { git = "https://github.com/belltoy/rust-rtmp" }
+flv_codec = { git = "https://github.com/twitchalerts/flv_codec" }
+pin-utils = "0.1"
+num_cpus = "1"
+url = "2"
