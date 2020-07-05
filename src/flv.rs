@@ -9,6 +9,9 @@ use bytecodec::io::{IoDecodeExt, IoEncodeExt};
 use bytecodec::EncodeExt;
 
 use futures::{
+    future::{
+        TryFutureExt,
+    },
     stream::Stream,
 };
 use async_stream::{try_stream};
@@ -19,11 +22,11 @@ use rml_rtmp::{
 };
 use crate::PacketType;
 
-pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Result<Arc<PacketType>>>, tokio::task::JoinError> {
+pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Result<Arc<PacketType>>>, std::io::Error> {
     let path = path.to_owned();
     tokio::task::spawn_blocking(move || {
-        try_stream! {
-            let mut input_file = File::open(path)?;
+        let input_file = File::open(path)?;
+        let flv_stream: async_stream::AsyncStream<_, _> = try_stream! {
             let mut reader = BufReader::new(input_file);
             let mut decoder = flv_codec::FileDecoder::new();
             let mut last_ts = 0;
@@ -37,10 +40,15 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
                         let timestamp_value = timestamp.value() as u32;
 
                         let ts_delta = timestamp_value.checked_sub(last_ts).unwrap_or(0);
-                        last_ts = timestamp_value;
                         let timestamp = RtmpTimestamp::new(timestamp_value);
+                        if last_ts <= 0 {
+                            last_ts = timestamp_value;
+                        }
 
-                        tokio::time::delay_for(Duration::from_millis(ts_delta as u64)).await;
+                        if ts_delta > 300 {
+                            tokio::time::delay_for(Duration::from_millis(50)).await;
+                            last_ts = timestamp_value;
+                        }
                         let packet = PacketType::Video{ data: Bytes::from(data), ts: timestamp };
                         yield Arc::new(packet);
                     }
@@ -64,7 +72,7 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
                             SoundType::Stereo => 1,
                     };
                         let aac_packet_type = match tag.aac_packet_type {
-                            Some(AacPacketType::SequenceHeader) => continue,
+                            Some(AacPacketType::SequenceHeader) => 0,
                             Some(AacPacketType::Raw) => 1,
                             None => continue,
                         };
@@ -80,18 +88,26 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
 
                         let timestamp_value = tag.timestamp.value() as u32;
                         let ts_delta = timestamp_value.checked_sub(last_ts).unwrap_or(0);
-                        let last_ts = timestamp_value;
                         let timestamp = RtmpTimestamp::new(timestamp_value);
 
-                        tokio::time::delay_for(Duration::from_millis(ts_delta as u64)).await;
+                        if last_ts <= 0 {
+                            last_ts = timestamp_value;
+                        }
+
+                        if ts_delta > 300 {
+                            tokio::time::delay_for(Duration::from_millis(50)).await;
+                            let last_ts = timestamp_value;
+                        }
                         let packet = PacketType::Audio{ data, ts: timestamp};
                         yield Arc::new(packet);
                     }
                     Tag::ScriptData(s) => {
                         let timestamp_value = s.timestamp.value() as u32;
                         let ts_delta = timestamp_value.checked_sub(last_ts).unwrap_or(0);
-                        let last_ts = timestamp_value;
                         // let timestamp = RtmpTimestamp::new(timestamp_value);
+                        if last_ts <= 0 {
+                            last_ts = timestamp_value;
+                        }
 
                         let mut d = s.data.as_slice();
                         let mut data = rml_amf0::deserialize(&mut d).unwrap();
@@ -102,7 +118,10 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
                                 (Some(rml_amf0::Amf0Value::Utf8String(s)), Some(rml_amf0::Amf0Value::Object(metadata_object))) if s == "onMetaData" => {
                                     let mut metadata = rml_rtmp::sessions::StreamMetadata::new();
                                     metadata.apply_metadata_values(metadata_object);
-                                    tokio::time::delay_for(Duration::from_millis(ts_delta as u64)).await;
+                                    if ts_delta > 300 {
+                                        tokio::time::delay_for(Duration::from_millis(50)).await;
+                                        last_ts = timestamp_value;
+                                    }
                                     let packet = PacketType::Metadata(Arc::new(metadata));
                                     yield Arc::new(packet);
                                 }
@@ -113,8 +132,11 @@ pub async fn read_flv_tag(path: &str) -> Result<impl Stream<Item = std::io::Resu
                     },
                 }
             }
-        }
-    }).await
+        };
+        Ok(flv_stream)
+    }).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "open input file error")
+    }).await?
 }
 
 pub fn is_video_sequence_header(data: &[u8]) -> bool {

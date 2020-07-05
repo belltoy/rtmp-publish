@@ -126,39 +126,26 @@ async fn main() -> Result<(), std::io::Error> {
 
     let urls = urls.into_iter().map(|r| r.unwrap()).collect::<Vec<Url>>();
 
-    let num_threads = matches.value_of("threads").map(|n| {
-        n.parse::<usize>().expect("Cannot parse `threads`")
-    });
-
     let input_file_path = matches.value_of("INPUT").unwrap();
     assert!(input_file_path.ends_with(".flv") || input_file_path.ends_with(".FLV"),
         "Only FLV files are supported");
+    let msgs = flv::read_flv_tag(input_file_path).await?;
 
-    let mut builder = tokio::runtime::Builder::new();
-    builder.threaded_scheduler().enable_all();
-
-    if let Some(threads) = num_threads {
-        info!(root_logger, "Use {} cores as threads number", threads);
-        builder.core_threads(threads);
-    } else {
-        info!(root_logger, "Use the number of cores available to the system as threads number");
-    }
-
-    let (tx, _rx) = tokio::sync::broadcast::channel(16);
+    let (tx, _rx) = tokio::sync::broadcast::channel(2 * urls.len());
 
     let clients = futures::stream::futures_unordered::FuturesUnordered::new();
     for Url{ host, port, app, stream } in urls {
         let rx = tx.subscribe();
-        let client_fut = rtmp::client::Client::new(host, port, app, stream, rx, root_logger.clone());
+        let client_fut = rtmp::client::Client::new(host, port, app, stream, rx, &root_logger);
         clients.push(client_fut);
     }
 
-    let msgs = flv::read_flv_tag(input_file_path).await?;
     pin_mut!(msgs);
     let mut msgs: Pin<&mut _> = msgs;
 
     // await for all publish client ready
     let _ = clients.collect::<Vec<_>>().await;
+    info!(root_logger, "All publish client are ready");
 
     // broadcast
     while let Some(Ok(msg)) = msgs.next().await {

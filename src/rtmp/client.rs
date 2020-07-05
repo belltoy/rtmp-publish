@@ -20,18 +20,24 @@ use futures::{
 
 use rml_rtmp::{
     chunk_io::Packet,
-    messages::MessagePayload,
+    messages::{
+        MessagePayload,
+        RtmpMessage,
+        PeerBandwidthLimitType,
+    },
     sessions::{
         ClientSession, ClientSessionConfig, ClientSessionError, ClientSessionEvent,
         ClientSessionResult, PublishRequestType,
     },
 };
 use slog::{
-    debug, info, warn, error,
+    o,
+    trace, debug, info, warn, error,
     Logger,
 };
 
 use crate::{
+    flv,
     error::{
         Error,
         ErrorKind,
@@ -52,7 +58,8 @@ struct Session {
 }
 
 impl Client {
-    pub async fn new(addr: String, port: u16, app: String, stream: String, broadcast_rx: broadcast::Receiver<Arc<PacketType>>, logger: Logger) -> Self {
+    pub async fn new(addr: String, port: u16, app: String, stream: String, broadcast_rx: broadcast::Receiver<Arc<PacketType>>, logger: &Logger) -> Self {
+        let logger = logger.new(o!("app" => app.clone(), "stream" => stream.clone()));
         let (notify_tx, notify_rx) = oneshot::channel();
         tokio::spawn(async move {
             match Self::connect(format!("{}:{}", addr, port)).await {
@@ -87,13 +94,13 @@ impl Client {
               T: AsyncRead + AsyncWrite + Send + 'static,
     {
         let (to_server, from_server) = transport.split();
-        let (tx, rx) = futures::channel::mpsc::channel(16); // response to socket channel
+        let (tx, rx) = futures::channel::mpsc::channel(8); // response to socket channel
 
         // write back to connection asynchronously
         let logger_inner = logger.clone();
         tokio::spawn(async move {
             let _ = rx.map(|r| Ok(r)).forward(to_server).await;
-            info!(logger_inner, "publisher write end finished");
+            info!(logger_inner, "Publisher write end finished");
         });
 
         let broadcast_rx = broadcast_rx.into_stream().map_ok(|m| ReceivedType::Broadcast(m))
@@ -113,8 +120,8 @@ impl Client {
 }
 
 impl Session {
-    fn new(app: String, stream: String, inner: ClientSession, notify_tx: oneshot::Sender<()>, logger: Logger) -> Self {
-        Self { app, stream, inner, notify_tx: Some(notify_tx), logger }
+    fn new(app: String, stream: String, inner: ClientSession, notify_tx: oneshot::Sender<()>, logger: &Logger) -> Self {
+        Self { app, stream, inner, notify_tx: Some(notify_tx), logger: logger.clone() }
     }
 
     fn request_connect(&mut self, tc_url: String) -> Result<Packet, Error> {
@@ -124,12 +131,19 @@ impl Session {
     fn handle_broadcast(&mut self, send_type: Arc<PacketType>) -> Result<Packet, ClientSessionError> {
         match *send_type {
             PacketType::Audio{ ref data, ref ts, .. } => {
+                if flv::is_audio_sequence_header(data) {
+                    debug!(self.logger, "Send audio sequence header")
+                }
                 self.inner.publish_audio_data(data.clone(), ts.clone(), false)
             }
             PacketType::Video{ ref data, ref ts, .. } => {
+                if flv::is_video_sequence_header(data) {
+                    debug!(self.logger, "Send video sequence header");
+                }
                 self.inner.publish_video_data(data.clone(), ts.clone(), false)
             }
             PacketType::Metadata( ref metadata ) => {
+                debug!(self.logger, "Send metadata");
                 self.inner.publish_metadata(&metadata)
             }
         }
@@ -144,7 +158,22 @@ impl Session {
         };
 
         if let Some(msg) = unknown {
-            debug!(self.logger, "received unknown message: {:?}", msg);
+            match msg.to_rtmp_message() {
+                Ok(RtmpMessage::SetPeerBandwidth{ size, limit_type }) => {
+                    let limit_type = match limit_type {
+                        PeerBandwidthLimitType::Dynamic => "Dynamic",
+                        PeerBandwidthLimitType::Hard => "Hard",
+                        PeerBandwidthLimitType::Soft => "Soft",
+                    };
+                    trace!(self.logger, "Ignore SetPeerBandwidth"; "size" => size, "limit_type" => limit_type);
+                }
+                Ok(_) => {
+                    debug!(self.logger, "Received unknown message: {:?}", msg);
+                }
+                Err(e) => {
+                    error!(self.logger, "Parse received packet error: {:?}", e);
+                }
+            }
         }
 
         // handle raised event
@@ -171,13 +200,25 @@ impl Session {
             Some(event) => {
                 match event {
                     ConnectionRequestAccepted => {
+                        debug!(self.logger, "Connect request accepted");
                         return self.handle_push_connection_accepted_event().map(Some);
                     }
                     ConnectionRequestRejected{ description } => {
+                        debug!(self.logger, "Connect request rejected");
                         return Err(ErrorKind::Unknown(format!("connect request rejected by peer server: {}", description)).into());
                     }
                     PublishRequestAccepted => {
+                        debug!(self.logger, "Publish request accepted");
                         self.handle_push_publish_accepted_event();
+                    }
+                    AcknowledgementReceived{ bytes_received } => {
+                        trace!(self.logger, "Ack received: {:?}", bytes_received);
+                    }
+                    UnhandleableAmf0Command{ command_name, .. } if command_name == "onFCPublish" => {
+                        debug!(self.logger, "Received onFCPublish");
+                    }
+                    UnhandleableAmf0Command{ command_name, .. } if command_name == "onBWDone" => {
+                        debug!(self.logger, "Received onBWDone");
                     }
                     x => {
                         warn!(self.logger, "Unknown event raised by peer server: {:?}", x);
@@ -226,7 +267,7 @@ async fn start_reading<T>(tx: futures::channel::mpsc::Sender<Packet>,
         }
     }).collect::<Vec<_>>();
 
-    let mut session = Session::new(app, stream, session, notify_tx, logger.clone());
+    let mut session = Session::new(app, stream, session, notify_tx, &logger);
 
     let packet = session.request_connect(tc_url).unwrap();
     requests.push(Ok(packet));
