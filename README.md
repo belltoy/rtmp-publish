@@ -1,7 +1,7 @@
 RTMP Publish Bench Tool
 =======================
 
-This tool read flv packages from a specified file and push it to destinations from list or generated path, concurrently.
+This tool read flv packages from a specified .flv file (H264, AAC) and push it to destinations from list or generated paths, concurrently.
 
 ## Build
 
