@@ -37,4 +37,4 @@ rtmp://example.com/app/stream_f
 
 ## License
 
-MIT
+This project is licensed under the [MIT license](LICENSE).
