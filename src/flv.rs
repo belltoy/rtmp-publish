@@ -19,7 +19,7 @@ use futures::{
     stream::Stream,
 };
 use slog::{
-    info, error,
+    info,
     Logger,
 };
 use async_stream::{try_stream};
