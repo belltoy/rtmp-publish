@@ -28,6 +28,9 @@ mod error;
 mod rtmp;
 mod flv;
 mod logger;
+mod rtmp_url;
+use rtmp_url::Url;
+
 
 const USAGE: &str = "
     rtmp-publish [FLAGS] [OPTIONS] --input <INPUT> <DEST_LIST_FILE>
@@ -122,7 +125,7 @@ async fn main() -> Result<(), std::io::Error> {
         let urls = reader.lines().map(|r| r.unwrap());
         Box::new(urls)
     };
-    let urls = urls.map(|u| parse_rtmp_url(u.as_str())).collect::<Vec<Result<Url, _>>>();
+    let urls = urls.map(|u| rtmp_url::parse_rtmp_url(u.as_str())).collect::<Vec<Result<Url, _>>>();
     let repeat = matches.is_present("repeat");
 
     if let Some(Err(e)) = urls.iter().find(|u| u.is_err()) {
@@ -139,9 +142,9 @@ async fn main() -> Result<(), std::io::Error> {
     let (tx, _rx) = tokio::sync::broadcast::channel(1024);
 
     let clients = futures::stream::futures_unordered::FuturesUnordered::new();
-    for Url{ host, port, app, stream } in urls {
+    for url in urls {
         let rx = tx.subscribe();
-        let client_fut = rtmp::client::Client::new(host, port, app, stream, rx, &root_logger);
+        let client_fut = rtmp::client::Client::new(url, rx, &root_logger);
         clients.push(client_fut);
     }
 
@@ -191,32 +194,4 @@ pub enum ReceivedType {
         bytes_read: usize,
     },
     Broadcast(Arc<PacketType>),
-}
-
-#[derive(Debug)]
-struct Url {
-    host: String,
-    port: u16,
-    app: String,
-    stream: String,
-}
-
-fn parse_rtmp_url(rtmp_url: &str) -> Result<Url, String> {
-    let parsed = url::Url::parse(rtmp_url).map_err(|e| e.to_string())?;
-    let host = if let Some(host) = parsed.host_str() {
-        host.to_owned()
-    } else {
-        return Err("EmptyHost".into());
-    };
-    let port = parsed.port().unwrap_or(1935);
-    let parts: Vec<_> = parsed.path().trim_start_matches('/').split('/').collect();
-    if parts.len() != 2 {
-        return Err("Wrong path".into());
-    }
-    Ok(Url {
-        host,
-        port,
-        app: parts[0].into(),
-        stream: parts[1].into(),
-    })
 }

@@ -37,6 +37,7 @@ use slog::{
 };
 
 use crate::{
+    rtmp_url::Url,
     flv,
     error::{
         Error,
@@ -59,7 +60,8 @@ struct Session {
 }
 
 impl Client {
-    pub async fn new(addr: String, port: u16, app: String, stream: String, broadcast_rx: broadcast::Receiver<Arc<PacketType>>, logger: &Logger) -> Self {
+    pub async fn new(url: Url, broadcast_rx: broadcast::Receiver<Arc<PacketType>>, logger: &Logger) -> Self {
+        let Url { app, stream, host, port, vhost } = url;
         let logger = logger.new(o!("app" => app.clone(), "stream" => stream.clone()));
         let (notify_tx, notify_rx) = oneshot::channel();
         let (buffer_tx, buffer_rx) = futures::channel::mpsc::channel(8);
@@ -74,10 +76,15 @@ impl Client {
 
         let logger_inner = logger.clone();
         tokio::spawn(async move {
-            match Self::connect(format!("{}:{}", addr, port)).await {
+            let server = format!("{}:{}", host, port);
+            match Self::connect(&server).await {
                 Ok(transport) => {
-                    let tc_url = format!("rtmp://{}:{}/{}", addr, port, app);
-                    info!(logger_inner, "starting to push {}/{}", tc_url, stream);
+                    let tc_url = if let Some(vhost) = vhost {
+                        format!("rtmp://{}:{}/{}", vhost, port, app)
+                    } else {
+                        format!("rtmp://{}:{}/{}", host, port, app)
+                    };
+                    info!(logger_inner, "starting to push RTMP server: {}, with tc_url: {}/{}", server, tc_url, stream);
                     Self::start_push(transport, buffer_rx, notify_tx, app, stream, tc_url, logger_inner.clone()).await;
                 }
                 Err(e) => {
