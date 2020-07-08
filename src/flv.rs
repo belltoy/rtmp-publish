@@ -78,10 +78,8 @@ pub async fn read_flv_tag(path: &str, repeat: bool, logger: Logger) -> Result<im
                                 last_ts = timestamp_value;
                             }
 
-                            if ts_delta > 300 {
-                                sleep(ts_delta).await;
-                                last_ts = timestamp_value;
-                            }
+                            sleep(ts_delta).await;
+                            last_ts = timestamp_value;
 
                             video_tag.timestamp = Timestamp::new(timestamp_value as i32);
                             let mut data = Vec::new();
@@ -141,10 +139,8 @@ pub async fn read_flv_tag(path: &str, repeat: bool, logger: Logger) -> Result<im
                                 last_ts = timestamp_value;
                             }
 
-                            if ts_delta > 300 {
-                                sleep(ts_delta).await;
-                                last_ts = timestamp_value;
-                            }
+                            sleep(ts_delta).await;
+                            last_ts = timestamp_value;
 
                             let packet = PacketType::Audio{ data, ts: timestamp};
                             yield Arc::new(packet);
@@ -170,10 +166,8 @@ pub async fn read_flv_tag(path: &str, repeat: bool, logger: Logger) -> Result<im
                                     (Some(rml_amf0::Amf0Value::Utf8String(s)), Some(rml_amf0::Amf0Value::Object(metadata_object))) if s == "onMetaData" => {
                                         let mut metadata = rml_rtmp::sessions::StreamMetadata::new();
                                         metadata.apply_metadata_values(metadata_object);
-                                        if ts_delta > 300 {
-                                            sleep(ts_delta).await;
-                                            last_ts = timestamp_value;
-                                        }
+                                        sleep(ts_delta).await;
+                                        last_ts = timestamp_value;
                                         let packet = PacketType::Metadata(Arc::new(metadata));
                                         metadata_sent = true;
                                         yield Arc::new(packet);
@@ -198,9 +192,10 @@ pub async fn read_flv_tag(path: &str, repeat: bool, logger: Logger) -> Result<im
     }).await?
 }
 
-async fn sleep(delta: u32) {
-    if delta > 0 {
-        tokio::time::delay_for(Duration::from_millis(delta as u64)).await;
+async fn sleep(duration: u32) {
+    let delay = duration.checked_sub(10).unwrap_or(0);
+    if delay > 0 {
+        tokio::time::delay_for(Duration::from_millis(delay as u64)).await;
     }
 }
 
