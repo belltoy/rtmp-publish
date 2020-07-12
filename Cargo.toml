@@ -1,5 +1,5 @@
 [package]
-name = "rtmp-publish"
+name = "waterfall"
 version = "0.1.0"
 authors = ["belltoy <belltoy@gmail.com>"]
 edition = "2018"

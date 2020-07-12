@@ -1,7 +1,10 @@
-RTMP Publish Bench Tool
-=======================
+Waterfall
+=========
 
-![](https://github.com/belltoy/rtmp-publish/workflows/Rust/badge.svg)
+Previous _RTMP Publish Bench Tool_.
+
+![](https://github.com/belltoy/waterfall/workflows/Rust/badge.svg)
+
 
 This tool read flv packages from a specified .flv file (H264, AAC) and push it to destinations from list or generated paths, concurrently.
 

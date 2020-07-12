@@ -33,15 +33,15 @@ use rtmp_url::Url;
 
 
 const USAGE: &str = "
-    rtmp-publish [FLAGS] [OPTIONS] --input <INPUT> <DEST_LIST_FILE>
-    rtmp-publish [FLAGS] [OPTIONS] --input <INPUT> --concurrency <CONCURRENCY> --prefix <PREFIX>";
+    waterfall [FLAGS] [OPTIONS] --input <INPUT> <DEST_LIST_FILE>
+    waterfall [FLAGS] [OPTIONS] --input <INPUT> --concurrency <CONCURRENCY> --prefix <PREFIX>";
 
 const EXAMPLE: &str = "
 EXAMPLES:
 
     ## Auto-Generated destinations
 
-    > rtmp-publish --input test.flv -c 100 -p rtmp://test.example.com/app/stream_prefix_
+    > waterfall --input test.flv -c 100 -p rtmp://test.example.com/app/stream_prefix_
 
     This command will read from test.flv, push RTMP stream to the following destinations concurrently:
 
@@ -53,7 +53,7 @@ EXAMPLES:
 
     ## From destinations list file
 
-    > rtmp-publish --input test.flv target_list.txt
+    > waterfall --input test.flv target_list.txt
 
     This command will read from test.flv, push RTMP stream to the destinations read from `target_list.txt` concurrently:
 
